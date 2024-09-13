@@ -1508,12 +1508,18 @@ class Mesh(DataStruct):
 
             # NOTE: at this point, 'VisualsVertChunk's are grouped by face in 'faces'
             # NOTE: max +/- 8 each axis (i.e. +/- 32768/4096)
+            # FIXME: the UV remapping seems to currently work in terms of fixing the actual
+            # values, but the output is still broken because many vertices are shared, and
+            # the remapping is constantly at odds with the changing values as it processes
+            # the faces, causing wrapping values to appear everywhere. most likely will need
+            # to split up the mesh/verts here to facilitate moving the UVs around without
+            # causing wrapping.
             bad_uvs = 0
             unfixable_uvs = 0
             x_max_range = 0
             y_max_range = 0
-            x_mirr = self.material.texture.chunks[0].unk1 & 0x01 > 0
-            y_mirr = self.material.texture.chunks[0].unk1 & 0x10 > 0
+            x_mirr = self.material.texture is not None and self.material.texture.chunks[0].unk1 & 0x01 > 0
+            y_mirr = self.material.texture is not None and self.material.texture.chunks[0].unk1 & 0x10 > 0
             for face in faces:
                 xmin: int = min([v.uv[0] for v in face])
                 xmax: int = max([v.uv[0] for v in face])
@@ -1527,6 +1533,18 @@ class Mesh(DataStruct):
                     # only 1 tile leeway needed to correct position in mirrored tiles
                     if xrange > (61440 if x_mirr else 65536) or yrange > (61440 if y_mirr else 65536):
                         unfixable_uvs += 1
+                    else:
+                        x_off = xmax % 4096 + (28672 if x_mirr else 32768) - xmax
+                        y_off = ymax % 4096 + (28672 if y_mirr else 32768) - ymax
+                        x_flip = x_mirr and (x_off / 4096) % 2 > 0
+                        y_flip = y_mirr and (y_off / 4096) % 2 > 0
+                        for vert in face:
+                            vert.uv[0] += x_off
+                            if x_flip:
+                                vert.uv[0] = -vert.uv[0]
+                            vert.uv[1] += y_off
+                            if y_flip:
+                                vert.uv[1] = -vert.uv[1]
                 if xrange > x_max_range:
                     x_max_range = xrange
                 if yrange > y_max_range:
