@@ -586,40 +586,40 @@ class VisualsVertChunk(DataStruct):
         self.uv = uv
         struct.pack_into(self.format_string, buffer, cursor, *self.co, *self.uv, *self.color.make())
         return cursor + self.size
-    
+
 class VisualsVertBuffer():
     def __init__(self, parent, model, length = 0):
         self.parent = parent
         self.model = model
-        self.data = []
+        self.data: list[VisualsVertChunk] = []
         self.length = length
-        
+
     def read(self, buffer, cursor):
         for i in range(self.length):
             vert = VisualsVertChunk(self, self.model)
             cursor = vert.read(buffer, cursor)
             self.data.append(vert)
         return self
-    
+
     def make(self):
         return [v.co for v in self.data]
-    
+
     def unmake(self, mesh):
         uv_data = None
         color_data = None
-        
+
         if mesh.data is None:
             print(self.parent.id, 'has no mesh data')
             return
-        
+
         if mesh.data.uv_layers and mesh.data.uv_layers.active:
             uv_data = mesh.data.uv_layers.active.data
         if mesh.data.vertex_colors and mesh.data.vertex_colors.active:
             color_data = mesh.data.vertex_colors.active.data
-        
+
         for vert in mesh.data.vertices:
             self.data.append(VisualsVertChunk(self, self.model))
-            
+
         #there's probably a better way to do this but this works for now
         #https://docs.blender.org/api/current/bpy.types.Mesh.html
         for poly in mesh.data.polygons:
@@ -628,28 +628,28 @@ class VisualsVertBuffer():
                 uv = None if not uv_data else uv_data[loop_index].uv
                 color = None if not color_data else color_data[loop_index].color
                 self.data[vert_index].unmake(mesh.matrix_world @ mesh.data.vertices[vert_index].co, uv, color)
-                
+
         self.length = len(self.data)
         return self
-    
+
     def to_array(self):
         return [d.to_array() for d in self.data]
-    
+
     def write(self, buffer, cursor, index_buffer):
         if not index_buffer.offset:
             raise AttributeError(index_buffer, "Index buffer must be written before vertex buffer")
-        
+
         vert_buffer_addr = cursor
         for vert in self.data:
             cursor = vert.write(buffer, cursor)
-        
+
         #we write the references within index buffer to this vert buffer
         for i, chunk in enumerate(index_buffer.data):
             if chunk.type == 1:
                 writeUInt32BE(buffer, vert_buffer_addr + chunk.start * 16, index_buffer.offset + i * 8 + 4)
-            
+
         return cursor
-    
+
 class VisualsIndexChunk1(DataStruct):
     # http://n64devkit.square7.ch/n64man/gsp/gSPVertex.htm
     def __init__(self, parent, model, type):
@@ -1505,7 +1505,38 @@ class Mesh(DataStruct):
             
             #replace each index with its vert
             faces = [[verts[i] for i in face] for face in faces]
-            
+
+            # NOTE: at this point, 'VisualsVertChunk's are grouped by face in 'faces'
+            # NOTE: max +/- 8 each axis (i.e. +/- 32768/4096)
+            bad_uvs = 0
+            unfixable_uvs = 0
+            x_max_range = 0
+            y_max_range = 0
+            x_mirr = self.material.texture.chunks[0].unk1 & 0x01 > 0
+            y_mirr = self.material.texture.chunks[0].unk1 & 0x10 > 0
+            for face in faces:
+                xmin: int = min([v.uv[0] for v in face])
+                xmax: int = max([v.uv[0] for v in face])
+                ymin: int = min([v.uv[1] for v in face])
+                ymax: int = max([v.uv[1] for v in face])
+                xrange = xmax - xmin
+                yrange = ymax - ymin
+                # not worried about a single off value when exactly +8 will be 1 off
+                if xmin < -32768 or ymin < -32768 or xmax > 32768 or ymax > 32768:
+                    bad_uvs += 1
+                    # only 1 tile leeway needed to correct position in mirrored tiles
+                    if xrange > (61440 if x_mirr else 65536) or yrange > (61440 if y_mirr else 65536):
+                        unfixable_uvs += 1
+                if xrange > x_max_range:
+                    x_max_range = xrange
+                if yrange > y_max_range:
+                    y_max_range = yrange
+            if bad_uvs:
+                print('{} has {} bad UVs'.format(node_tmp.name, bad_uvs))
+                print('  {} unfixable'.format(unfixable_uvs))
+                print('  {} largest x'.format(x_max_range))
+                print('  {} largest y'.format(y_max_range))
+
             #reorder faces to maximize shared edges
             ordered_faces = []
             ordered_faces.append(faces.pop(0))
